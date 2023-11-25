@@ -1,0 +1,760 @@
+pico-8 cartridge // http://www.pico-8.com
+version 41
+__lua__
+
+
+--main
+restart=false
+function _init()
+	trails={}
+	max_trails=1000
+	bullets={}
+	max_bullets=50
+	splashes={}
+	max_splashes=10
+
+	cshakex=0
+	cshakey=0
+
+	score=0
+	state=0
+	global={}
+	global.g=0.4
+
+	clouds_bg=init_clouds(50, 7, ▒)
+	clouds_fg=init_clouds(50, 7, █)
+
+	player=init_player(2048, 512, 0, 0, -10)
+
+	enemies={}
+	for i=0,30 do
+		add(enemies, init_enemy(rnd(4096), 0, rnd(360), 5))
+	end
+	explosions={}
+end
+
+function _update()
+	camx = peek2(0x5f28)
+	camy = peek2(0x5f2a)
+	if state == 0 then
+		if btn(4) then
+			state = 1
+			if not restart then
+				music(0)
+				restart=true
+			end
+		end
+	elseif state == 1 then
+
+		update_player(player)
+		if player.y > 500 then
+			splash(player.x - 16 - 0.5*player.vx, player.y)
+		end
+		if player.boosting then
+			emit_trail(player.x-8+10*sin(player.a/360), player.y-8+10*cos(player.a/360), 33)
+		end
+
+		-- camera
+		camera(cshakex+player.x-64-8+2*player.vx, cshakey+mid(0, player.y-64-8+2*player.vy, 450))
+		camx = peek2(0x5f28)
+		camy = peek2(0x5f2a)
+
+		foreach(trails, update_trail)
+		for i=1,#bullets do
+			if i <= #bullets then
+				update_bullet(i)
+			end
+		end
+		for i=1,#enemies do
+			if i <= #enemies then
+				update_enemy_idx(i)
+			end
+		end
+		update_explosions(explosions)
+		update_splashes()
+	elseif state == 2 then
+		foreach(trails, update_trail)
+		for i=1,#bullets do
+			if i <= #bullets then
+				update_bullet(i)
+			end
+		end
+		for i=1,#enemies do
+			if i <= #enemies then
+				update_enemy_idx(i)
+			end
+		end
+		update_explosions(explosions)
+		update_splashes()
+		if btnp(5) then
+			_init()
+		end
+	end
+end
+
+function _draw()
+	cls(15)
+	if state < 2 and player.life < 50 then
+		death_circle(2*player.life)
+	end
+	for c in all(clouds_bg) do
+		draw_cloud(c, player.x/3, player.y/3)
+	end
+	foreach(clouds_fg, draw_cloud)
+	line(camx, 512, camx+128, 512, 7)
+
+	foreach(trails, draw_trail)
+	draw_explosions(explosions)
+
+	if state == 0 then
+		--camera(player.x-64-8, player.y-64-8)
+		print("press 🅾️ to launch", camx+31, camy+45, 5)
+	end
+
+	if state < 2 then
+		draw_player(player)
+	else
+		death_circle(0)
+		sfx(-2, 3)
+		print("score: " .. score, camx+20, camy+65, 5)
+	end
+
+	foreach(bullets, draw_bullet)
+	foreach(enemies, draw_enemy)
+	draw_splashes()
+	if state < 2 then
+		draw_reflection()
+	end
+end
+
+-->8
+-- player
+function init_player(x, y, a, vx, vy)
+	local p={}
+	p.sprites={0,2,4,2}
+	p.x=x
+	p.y=y
+	p.a=a
+	p.va=0
+	p.vx=vx or 0
+	p.vy=vy or 0
+	p.boosting=false
+	p.drag=0.96
+	p.lift=0.8
+	p.boost=0.7
+	p.cooldown=0
+	p.invincibility=0
+	p.life=50
+	return p
+	end
+
+function update_player(p)
+	--underwater ?
+	if p.y > 512 then
+	if p.y >= 530 then
+	p.y = 530
+	p.vy = -5
+	end
+	p.life -= 1
+	end
+
+	-- too high ?
+	if p.y < 0 then
+	if p.y <= -30 then
+	p.y = -30
+	end
+	p.life -= 1
+	end
+
+	--hit ?
+	cshakex = 0
+	cshakey = 0
+	for e in all(enemies) do
+	if abs(e.x - p.x) < 10 and abs(e.y - p.y) < 10 and p.invincibility == 0 then
+	cshakex += rnd(10) - 5
+	cshakey += rnd(10) - 5
+	p.life -= 15
+	p.invincibility=3
+	end
+	end
+	if p.invincibility > 0 then
+	p.invincibility -= 1
+	end
+
+	-- dead ?
+	if p.life <= 0 then
+	state=2
+	for i=1,5 do
+add(explosions, explode(p.x-10+rnd(20), p.y-10+rnd(20)))
+	end
+sfx(3, 3)
+	end
+
+	--shooting
+	if btn(5) then
+	if p.cooldown == 0 then
+	cshakex = rnd(10)-5
+	cshakey = rnd(10)-5
+	shoot_bullet(p.x-8, p.y-8, p.a, sqrt(p.vx^2 + p.vy^2) + 5)
+sfx(1)
+	p.cooldown = 3
+	end
+	else
+	if p.life < 50 then
+	p.life += 0.5 
+	end
+	end
+
+	if p.cooldown > 0 then
+	p.cooldown -= 1
+	end
+
+	if btn(0) then 
+	p.va -= 10
+	elseif btn(1) then
+	p.va += 10
+	end
+	p.va *= 0.4
+	p.a += p.va
+	p.a%=360
+
+	if btn(4) then
+	-- boosting
+	if not p.boosting then
+	p.boosting=true
+sfx(0, 3)
+	end
+	else
+	p.boosting=false
+sfx(-2, 3)
+	end
+
+	if p.boosting then
+	-- precomputing trigs
+	local cc=cos(p.a/360)
+local ss=sin(p.a/360)
+
+	-- computing lift effect
+	p.vx = p.vy * (1-p.lift)*cc*ss + p.vx * (ss^2 + p.lift * cc^2)
+p.vy = p.vy * (cc^2 + p.lift * ss^2) + p.vx*cc*ss*(1-p.lift)
+
+	-- boosting
+	p.vx -= p.boost*ss
+	p.vy -= p.boost*cc
+	end
+
+	p.vy += global.g --falling
+
+	p.vx *= p.drag
+	p.vy *= p.drag
+
+	p.x += p.vx
+	p.y += p.vy
+end
+
+function draw_player(p)
+	local spr_idx = 1+flr((p.a% 180)/45)
+	local sx = (p.sprites[spr_idx] * 8) % 128
+	local sy = flr(p.sprites[spr_idx] / 128)
+	rspr(sx, sy, 32, 16, p.a/360, 2)
+	sspr(32,16,16,16,p.x-8*2,p.y-8*2)
+end
+
+-->8
+-- enemy
+
+function init_enemy(x, y, a, v)
+	local e={}
+	e.x=x
+	e.y=y
+	e.a=a
+	e.v=v
+	e.va=0
+	e.life=10
+	return e
+end
+
+function update_enemy_idx(i)
+	local e=enemies[i]
+	-- teleport if too far from player
+	if abs(e.x - player.x) > 2048 then
+		e.x = player.x + player.vx * (20 + rnd(40))
+                e.y = player.y - 10 + rnd(20)
+                e.a = - player.a
+	end
+	-- chasing
+	local diff_a = rnd(180) - 90
+	if rnd(1) > 0.4 then
+		local diff_x = player.x - e.x
+		local diff_y = player.y - e.y
+		diff_a = (atan2(-diff_x, diff_y)*360 - 90) - e.a
+		if diff_a > 180 then
+			diff_a -= 360
+		end
+	end
+	e.a += diff_a*0.1
+	e.x -= e.v*sin(e.a/360)
+	e.y -= e.v*cos(e.a/360)
+
+	-- hit ?
+	if state < 2 and abs(player.x - e.x) < 8 and abs(player.y - e.y) < 8 then
+			e.life -= 5
+			sfx(2, 3)
+	end
+	for b_i, b in pairs(bullets) do
+		if abs(e.x - b.x) < 8 and abs(e.y - b.y) < 8 then
+			e.life -= 5
+			deli(bullets,b_i)
+			sfx(2, 3)
+		end
+	end
+	-- dead ?
+	if e.life <= 0 then
+		score += 1
+		deli(enemies,i)
+		add(explosions, explode(e.x, e.y))
+		add(enemies, init_enemy(rnd(4096), 0, 180, 7))
+	end
+	emit_trail(e.x-4, e.y-4, 20)
+end
+
+function draw_enemy(e)
+	rspr(0, 16, 32, 32, e.a/360, 1)
+	sspr(32,32,8,8,e.x-8,e.y-8)
+end
+
+-->8
+--utils
+function death_circle(r)
+	fillp(▒)
+	rectfill(camx-50, camy-50, camx+183, camy+183, 7)
+	fillp(█)
+	circfill(player.x-8, player.y-8, r, 15)
+end
+
+function explode(x, y)
+	local e={}
+	e.x=x
+	e.y=y
+	e.t=0
+	return e
+end
+
+function update_explosions(e_table)
+	for i, e in pairs(e_table) do
+		if i <= #e_table then
+			e.t += 1
+			if e.t > 20 then
+				deli(e_table,i)
+			end
+		end
+	end
+end
+
+function draw_explosions(e_table)
+	for e in all(e_table) do
+		if e.t < 5 then
+			fillp(█)
+			circfill(e.x, e.y, e.t*4, 7)
+		elseif e.t < 8 then
+			fillp(▒)
+			circfill(e.x, e.y, 20, 7)
+			fillp(█)
+			circfill(e.x-3, e.y+2, (e.t-10)*4, 15)
+		end
+	end
+end
+
+function rspr(sx,sy,x,y,a,w)
+	local ca,sa=cos(a),sin(a)
+	local srcx,srcy,addr,pixel_pair
+	local ddx0,ddy0=ca,sa
+	local mask=shl(0xfff8,(w-1))
+	w*=4
+	ca*=w-0.5
+	sa*=w-0.5
+	local dx0,dy0=sa-ca+w,-ca-sa+w
+	w=2*w-1
+	for ix=0,w do
+		srcx,srcy=dx0,dy0
+		for iy=0,w do
+			if band(bor(srcx,srcy),mask)==0 then
+				local c=sget(sx+srcx,sy+srcy)
+					sset(x+ix,y+iy,c)
+				else
+					sset(x+ix,y+iy,rspr_clear_col)
+				end
+				srcx-=ddy0
+				srcy+=ddx0
+		  end
+		dx0+=ddx0
+		dy0+=ddy0
+	end
+end
+
+function draw_reflection()
+	if camy > 512 - 128 then
+		for i=camx,camx+127 do
+			for j=512,camy+127 do
+				local c=pget(i, 2*512-j)
+				pset(i, j, c)
+			end
+		end
+	end
+end
+
+-->8
+--particles
+function splash(x, y)
+	if #splashes > max_splashes then
+		deli(splashes,1)
+	end
+	local s={}
+	s.x=x
+	s.y=y
+	s.age=0
+	add(splashes,s)
+end
+
+function update_splashes()
+	for s in all(splashes) do
+		if s.age < 30 then
+			s.age += 1
+		end
+	end
+end
+
+function draw_splashes()
+	for s in all(splashes) do
+		local h=0
+		if s.age < 16 then
+			h=16-s.age
+		else
+			h=0
+		end
+		sspr(0,8*4, 16, h, s.x, 512-h)
+	end
+end
+
+function shoot_bullet(x, y, a, v)
+	local b={}
+	b.x=x
+	b.y=y
+	b.a=a
+	b.v=v
+	if #bullets > max_bullets then
+		deli(bullets,1)
+	end
+	add(bullets,b)
+end
+
+function update_bullet(i)
+	local b=bullets[i]
+	--if b.x < 0 or b.x > 4096 or b.y < 0 or b.y > 512 then
+	if b.y > 512 or b.y < 0 then
+		deli(bullets,i)
+	else
+		b.x -= b.v*sin(b.a/360)
+		b.y -= b.v*cos(b.a/360)
+	end
+end
+
+function draw_bullet(b)
+	fillp(█)
+	circfill(b.x, b.y, 5, 15)
+	circfill(b.x, b.y, 4, 7)
+end
+
+function emit_trail(x, y, ttl)
+	local t={}
+	t.x=x
+	t.y=y
+	t.ttl=ttl
+	if #trails > max_trails then
+		deli(trails,1)
+	end
+	add(trails,t)
+end
+
+function update_trail(t)
+	t.ttl -= 1
+end
+
+function draw_trail(t)
+	fillp(█)
+	if t.ttl > 30 then
+		circfill(t.x, t.y, 5, 7)
+	elseif t.ttl < 25 then
+		fillp(▒)
+	end
+	circfill(t.x, t.y, t.ttl/8, 7)
+end
+
+-->8
+--clouds
+function init_clouds(n, col, p)
+	local clouds={}
+	for i=1,n do
+		local ox, oy = rnd(4096), rnd(300)
+		for j=0,5 do
+			local c={}
+			c.x = ox+rnd(64)
+			c.y = oy+rnd(64)
+			c.r=16+rnd(16)
+			c.c=col
+			c.p=p
+			add(clouds, c)
+		end
+	end
+	return clouds
+end
+
+function draw_cloud(c, x, y)
+	local ox = x or 0
+	local oy = y or 0
+	fillp(c.p)
+	circfill(ox+c.x, oy+c.y, c.r, c.c)
+end
+
+__gfx__
+00000008800000000000000880000000000000088000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000008800000000000000880000000000000088000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000008800000000000000880000000000000088000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000008800000000000000880000000000000088000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000088880000000000008888000000000000088800000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000088880000000000008888000000000000088800000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000088880000000000008888000000000000888800000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00800088880008000000808888080000000008888880000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00800088880008000000808888080000000088888888000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+08888888888888800000888888880000000088888888000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+08888888888888800000888888880000000000888800000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+08008888888800800000888888880000000000888800000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000888888000000000888888880000000000888800000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000088880000000000008888000000000000088000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000888888000000000088888800000000008888880000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00008888888800000000888888880000000088888888000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00055000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00055000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00555500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05555550000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00055000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00055000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00055000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00555500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000007770000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000077777000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000077777000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000777777700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000777777700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00007777777770000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00007777777770000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00007777777770000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00007777777770000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00077777777777000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00077777777777000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00077777777777000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00077777777777000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00077777777777000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00777777777777700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00777777777777700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00777777777777700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00777777777777700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00777777777777700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00777777777777700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00777777777777700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+07777777777777770000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+07777777777777770000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+07777777777777770000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+07777777777777770000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+07777777777777770000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+07777777777777770000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+07777777777777770000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+07777777777777770000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+07777777777777770000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+07777777777777770000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+07777777777777770000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+__label__
+7f7f7f7f7f7f7f7ffffffffffffffffffffffffff55f55ffff7f7f7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+f7f7f7f7f7f7f7f7fffffffffffffffffffffffffffffffffff7f7ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+7f7f7f7f7f7f7f7f7fffffffffffffffffffffffffffffffff7f7f7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+f7f7f7f7f7f7f7f7fffffffffffffffffffffffffffffffffff7f7ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+7f7f7f7f7f7f7f7f7fffffffffffffffffffffffffffffffffffff7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+f7f7f7f7f7f7f7f7f7fffffffffffffffffffffffffffffffffff7f7ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+7f7f7f7f7f7f7f7f7fffffffffffffffffffffff7fffffffffff7f7f7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+f7f7f7f7f7f7f7f7f7fffffffffffffffffffffffffffffffffff7f7ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+7f7f7f7f7f7f7f7f7fffffffffffffffffffffffffffffffffffff7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+f7f7f7f7f7f7f7f7f7fffffffffffffffffffffffffffffffffffff7fffffffffffffffffffffffffffffffffffffffffffff7ffffffffffffffffffffffffff
+7f7f7f7f7f7f7f7f7f7fffffffffffffffffffffffffffffffffff7f7fffffffffffffffffffffffffffffffffffffffffff7f7fff7fff7f7fffffffffffffff
+f7f7f7f7f7f7f7f7f7fffffffffffffffffffffffffffffffffff7f7f7fffffffffffffffffffffffffffffffff7fffffff7f7f7f7f7f7f7f7ffffffffffffff
+7f7f7f7f7f7f7f7f7f7fffffffffffffffffffffffffffff7ffff5555fffffffffffffffffffffffffffff7fff7f7fff7fff7f7f7f7f7f7f7fff75ffff5fffff
+f7f7f7f7f7f7f7f7f7fffffffffffffffffffffffffffffffffffff55ffffffffffffffffffffffffffff7f7fff7fffffffff7fff7f7f7f7f7f7f55ff55fffff
+7f7f7f7f7f7f7f7f7f7ffffffffffffffffffffffffffffffffffff55fffffffffffffffffffffffff7fff7fffffffffffffffffff7fff7f7f7f75555555ffff
+f7f7f7f7f7f7f7f7f7fffffffffffffffffffffffffffffffffffff557fffffffffffffffffff7fffffffffffffffffffffffffffffffffffff7f55555555fff
+7f7f7f7f7f7f7f7f7f7ffffffffffffffffffffffffffffffffff555555fff7fffffffff7fff7f7fffffffffffffffffffffffffffffffffffff7fff75555fff
+f7f7f7f7f7f7f7f7f7ffffffffffffffffffffffffffffffffffff5555fff7f7fff7fff7f7fff7ffffffffffffffffffffffffffffffffffffffffff55ffffff
+7f7f7f7f7f7f7f7f7f7ffffffffffffffffffffffffffffffffffff55fffff7fff7f7fff7fffffffffffffffffffffffffffffffffffffffffffffffffffffff
+f7f7f7f7f7f7f7f7f7ffffffffffffffffffffffffffffffffffffff55fffffffff7ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+7f7f7f7f7f7f7f7f7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+f7f7f7f7f7f7f7f7f7ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+7f7f7f7f7f7f7f7f7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+f7f7f7f7f7f7f7f7f7ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+7f7f7f7f7f7f7f7f7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+f7f7f7f7f7f7f7f7ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+7f7f7f7f7f7f7f7f7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+f7f7f7f7f7f7f7f7ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+7f7f7f7f7f7f7f7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+f7f7f7f7f7f7f7ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+7f7f7f7f7f7f7f7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+f7f7f7f7f7f7f7ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+7f7f7f7f7f7f7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+f7f7f7f7f7f7ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+7f7f7f7f7f7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+f7f7f7f7f7ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+7f7f7f7f7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+f7f7f7f7ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+7f7f7f7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+f7f7f7ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+7f7f7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+f7f7ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff88fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff88fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff88ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff888ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffff8fff8888ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffff88ffff8888ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+fffffffffffffffffffffffffffffffffffffffffffffffffffffff88888f8888fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+fffffffffffffffffffffffffffffffffffffffffffffffffffffff8f88888888fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffff888888ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffff88888888f8ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+fffffffffffffffffffffffffffffffffffffffffffffffffffffffffff888888888ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+fffffffffffffffffffffffffffffffffffffffffffffffffffffffff888888888888fffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffff888888f8fff8ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffff88888ffff8ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff888fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+77777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+
+__sfx__
+90020102176341b6500f625106050060010600106000f6000f6000f60000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+910500002465334655000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+490300003b6503d6502d65024640176300c6300562002625006000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+4906000004452256511d6501765013650116400f6400d6400b6300963007630056200462003620026100161500000000000000000000000000000000000000000000000000000000000000000000000000000000
+490c00000c0533e6003e6001a6533e6133e600009003e61300000000000c053000003e61300000000003e6130c0530000000000000003e61300000000003e61300000000000c053000003e613000003e6133e613
+010c000027051270511b0551600000000000002e055000000000000000000000000000000000002c0550000000000000002a0550000025055000002605527055000000000027055000002a0522a0522a0522a052
+010c00002705500000000001600000000000002705500000000000000027055000002a0552705522055000002c0302c0312c0322d0322d0322d0322e0322e0322e0322e0322e0322e0322e0322e0320000000000
+910c00000f25000200002000020000200002001b2500020000200002000020000200002000020000200002000020000200002000020000200002001b250002001925016250142500020012250002001425000000
+910c00000f25000200002000020000200002001b25000200002000020000200002000020000200002000020014250002000020015250002000020016250162501625016250162501625016250162501625300000
+010c00000c0533e6003e6000c0533e6133e600009003e61300000000000c053000003e61300000000003e6130c05300000000000c0533e6133e600009003e6133e6133e6133e613000003e6133e6133e61300000
+490c0000032510325003250032500325300200032550000006255002000a255002000020000200062550000000000000000825208252082520825208252082520825208252082520825208252082530000000000
+490c00000a2510a2500a2500a2500a253002000a255000000d25500000112550020000200002000d2550000000000000000f2520f2520f2520f2520f2520f2520f2520f2520f2520f2520f2520f2530000000000
+010c000027551275502755027550275530020027555000002a555003002e5550030000300003002a5550030000300003002c5522c5522c5522c5522c5522c5522c5522c5522c5522c5522c5522c5532450000500
+010c00002e5512e5502e5502e5502e553245002e55524500315552450035555245002450024500315552450024500245003355233552335523355233552335523355233552335523355233552335533050030500
+010c000000000000000c053000000c053000001a653000000c053000000c053000001a6530000000655000001a65500655006550065500900000001a65500655006550065500000000001a653000000000000000
+010c00000a1520a3000a1520a1000a1520a1000a1520a1000a1520a1000a1520a1000a1520a1000a1522230016152161521615216152161020c102161521615216152161520c10200102191521a1521a15300000
+010c00001615116152161520000000000000001915119151191510000000000000001915119151191510000021050220502205022050000000000021050220502205022050000000000026050260502605000000
+490c00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002205021050200501e050200501e0501b05019050
+000c00001b050000001b0500000000000000001b050000001e050000001b050000000000000000220522205222052220522205222052220522205222052220532200022000220002200022000220002205022050
+011000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+__music__
+00 0e0f1044
+01 04050744
+00 04060844
+00 04050744
+00 09060844
+00 040a1144
+00 040b1244
+00 040a0c44
+02 090b0d44
+01 44454744
+00 44454744
+00 44454644
+00 44454844
+00 41424344
+00 41424344
+00 41424344
+01 44454744
+00 44464844
+00 44454744
+00 49464844
+00 444a4844
+00 444b4944
+00 444a4c44
+02 494b4d44
+
